@@ -1,4 +1,5 @@
 -- https://wiki.whatwg.org/wiki/GIF
+-- https://web.archive.org/web/20070715193723/http://odur.let.rug.nl/~kleiweg/gif/GIF89a.html#blocks
 
 require 'bit'
 local httpc = require("resty.http").new()
@@ -44,19 +45,34 @@ local status = res.status
 local length = res.headers["Content-Length"]
 local body   = res.body
 
--- for k, v in pairs(res.headers) do  
---     ngx.header[k] = v  
--- end
-ngx.header["Content-Length"] = length
+
 ngx.header["Content-Type"] = res.headers["Content-Type"]
 ngx.status=res.status
 
 if string.sub(body, 1, 3) ~= "GIF" then
+    ngx.header["Content-Length"] = length
     ngx.say(body)
     return
 end
 
 local p = num(0)
+
+--[[
+      7 6 5 4 3 2 1 0        Field Name                    Type
+     +---------------+
+   0 |      'G'      |       Signature                     3 Bytes
+     +-             -+
+   1 |      'I'      |
+     +-             -+
+   2 |      'F'      |
+     +---------------+
+   3 |               |       Version                       3 Bytes
+     +-             -+
+   4 |               |
+     +-             -+
+   5 |               |
+     +---------------+
+]]
 if  body:byte(p()) ~= 0x47 or      
     body:byte(p()) ~= 0x49 or
     body:byte(p()) ~= 0x46 or
@@ -68,6 +84,30 @@ then
     -- ngx.say(body)
     return
 end
+
+-- Logical Screen Descriptor
+--[[
+      7 6 5 4 3 2 1 0        Field Name                    Type
+     +---------------+
+  0  |               |       Logical Screen Width          Unsigned
+     +-             -+
+  1  |               |
+     +---------------+
+  2  |               |       Logical Screen Height         Unsigned
+     +-             -+
+  3  |               |
+     +---------------+
+  4  | |     | |     |       <Packed Fields>               See below
+     +---------------+
+  5  |               |       Background Color Index        Byte
+     +---------------+
+  6  |               |       Pixel Aspect Ratio            Byte
+     +---------------+
+     <Packed Fields>  =      Global Color Table Flag       1 Bit
+                             Color Resolution              3 Bits
+                             Sort Flag                     1 Bit
+                             Size of Global Color Table    3 Bits
+]]
 
 local width = body:byte(p())+(body:byte(p())*2^8)
 local height = body:byte(p())+(body:byte(p())*2^8)
@@ -83,6 +123,30 @@ ngx.log(ngx.STDERR
     , width, height, global_colors_table_flag, num_global_colors_pow2, num_global_colors, background)
 )
 
+-- Global Color Table
+-- 3 x 2^(Size of Global Color Table+1)
+--[[
+      7 6 5 4 3 2 1 0        Field Name                    Type
+     +===============+
+  0  |               |       Red 0                         Byte
+     +-             -+
+  1  |               |       Green 0                       Byte
+     +-             -+
+  2  |               |       Blue 0                        Byte
+     +-             -+
+  3  |               |       Red 1                         Byte
+     +-             -+
+     |               |       Green 1                       Byte
+     +-             -+
+ up  |               |
+     +-   . . . .   -+       ...
+ to  |               |
+     +-             -+
+     |               |       Green 255                     Byte
+     +-             -+
+767  |               |       Blue 255                      Byte
+     +===============+    
+]]
 if global_colors_table_flag then
     p(num_global_colors * 3)
 end
@@ -91,19 +155,117 @@ while p(0) < body:len() do
     local block_flag = body:byte(p())
     ngx.log(ngx.STDERR, string.format("block_flag:%x, p:%x",block_flag, p(0)-1))
     if block_flag == 0x21 then
-        -- 图形控制扩展(Graphic Control Extension)
+        -- Graphic Control Extension
+
         local ext_block_flag = body:byte(p())
         ngx.log(ngx.STDERR, string.format("ext_block_flag:%x",ext_block_flag))
         if ext_block_flag == 0xff then
-            local bflag = {body:byte(p(), p(0)+15)}
-            if bflag[1] == 0x0b and string.sub(body, p(0)+1, p(0)+11) == "NETSCAPE2.0" then
-                -- application block
-                ngx.log(ngx.STDERR, "NETSCAPE2.0")
-                p(11) --NETSCAPE2.0
-                ngx.log(ngx.STDERR, string.format("p:%x", p(0)))
+            -- Application Extension Label
+            --[[
+                 7 6 5 4 3 2 1 0        Field Name                    Type
+                +---------------+
+             0  |     0x21      |       Extension Introducer          Byte
+                +---------------+
+             1  |     0xFF      |       Extension Label               Byte
+                +---------------+
+           
+                +---------------+
+             0  |     0x0B      |       Block Size                    Byte
+                +---------------+
+             1  |               |
+                +-             -+
+             2  |               |
+                +-             -+
+             3  |               |       Application Identifier        8 Bytes
+                +-             -+
+             4  |               |
+                +-             -+
+             5  |               |
+                +-             -+
+             6  |               |
+                +-             -+
+             7  |               |
+                +-             -+
+             8  |               |
+                +---------------+
+             9  |               |
+                +-             -+
+            10  |               |       Appl. Authentication Code     3 Bytes
+                +-             -+
+            11  |               |
+                +---------------+
+           
+                +===============+
+                |               |
+                |               |       Application Data              Data Sub-blocks
+                |               |
+                |               |
+                +===============+
+           
+                +---------------+
+             0  |     0x00      |       Block Terminator              Byte
+                +---------------+
+            ]]
+
+            local application_ext_label_size = body:byte(p())
+
+            -- Application Identifier (8 bytes) + Application Authentication Code (3 bytes)
+            local application_identifier = string.sub(body, p(), p(0)+10)
+            ngx.log(ngx.STDERR, string.format("Application Identifier:%s",application_identifier))
+            
+            p(10)
+            
+            if application_identifier == "NETSCAPE2.0" then
+                -- NETSCAPE2.0
+
+                -- Application Data Sub-block
                 local sub_block_data_size = body:byte(p())
                 local sub_block_id = body:byte(p())
                 if sub_block_id == 0x01 then
+                    -- Netscape Looping Application Extension (GIF Unofficial Specification)
+                    -- http://www.vurdalakov.net/misc/gif/netscape-looping-application-extension
+                    --[[
+                            +---------------+
+                         0  |     0x21      |  Extension Label
+                            +---------------+
+                         1  |     0xFF      |  Application Extension Label
+                            +---------------+
+                         2  |     0x0B      |  Block Size
+                            +---------------+
+                         3  |               | 
+                            +-             -+
+                         4  |               | 
+                            +-             -+
+                         5  |               | 
+                            +-             -+
+                         6  |               | 
+                            +-  NETSCAPE   -+  Application Identifier (8 bytes)
+                         7  |               | 
+                            +-             -+
+                         8  |               | 
+                            +-             -+
+                         9  |               | 
+                            +-             -+
+                        10  |               | 
+                            +---------------+
+                        11  |               | 
+                            +-             -+
+                        12  |      2.0      |  Application Authentication Code (3 bytes)
+                            +-             -+
+                        13  |               | 
+                            +===============+                      --+
+                        14  |     0x03      |  Sub-block Data Size   |
+                            +---------------+                        |
+                        15  |     0x01      |  Sub-block ID          |
+                            +---------------+                        | Application Data Sub-block
+                        16  |               |                        |
+                            +-             -+  Loop Count (2 bytes)  |
+                        17  |               |                        |
+                            +===============+                      --+
+                        18  |     0x00      |  Block Terminator
+                            +---------------+
+                    ]]
+
                     -- loop count
                     if loop ~= nil then
                         -- 设置loop
@@ -115,15 +277,43 @@ while p(0) < body:len() do
                     p(sub_block_data_size - 1)
                 end
                 local block_terminator = body:byte(p())
-            elseif bflag[1] == 0x0b and string.sub(body, p(0)+1, p(0)+11) == "XMP DataXMP" then
+            elseif application_identifier == "XMP DataXMP" then
                 -- XMP data
-                p(11)
                 skip(body, p)
             end
         elseif ext_block_flag == 0xf9 then
             -- 图形控制扩展标签(Graphic Control Label)
+            --[[
+                7 6 5 4 3 2 1 0        Field Name                    Type
+                +---------------+
+             0  |     0x21      |       Extension Introducer          Byte
+                +---------------+
+             1  |     0xF9      |       Graphic Control Label         Byte
+                +---------------+
+           
+                +---------------+
+             0  |     0x04      |       Block Size                    Byte
+                +---------------+
+             1  |0 0 0|     | | |       <Packed Fields>               See below
+                +---------------+
+             2  |               |       Delay Time                    Unsigned
+                +-             -+
+             3  |               |
+                +---------------+
+             4  |               |       Transparent Color Index       Byte
+                +---------------+
+           
+                +---------------+
+             0  |     0x00      |       Block Terminator              Byte
+                +---------------+
+                 <Packed Fields>  =     Reserved                      3 Bits
+                                        Disposal Method               3 Bits
+                                        User Input Flag               1 Bit
+                                        Transparent Color Flag        1 Bit
+            ]]
+
+
             local block_size = body:byte(p())
-            ngx.log(ngx.STDERR, "block_size:", block_size)
             local pf1 = body:byte(p())
             if delay ~= nil then
                 -- 设置delay
@@ -134,7 +324,26 @@ while p(0) < body:len() do
             local tra_color_index = body:byte(p())
             local block_terminator = body:byte(p())
         elseif ext_block_flag == 0xfe then
-            -- Comment Extension
+            -- Comment Extensio
+            --[[
+                7 6 5 4 3 2 1 0        Field Name                    Type
+                +---------------+
+             0  |     0x21      |       Extension Introducer          Byte
+                +---------------+
+             1  |     0xFE      |       Comment Label                 Byte
+                +---------------+
+           
+                +===============+
+                |               |
+             N  |               |       Comment Data                  Data Sub-blocks
+                |               |
+                +===============+
+           
+                +---------------+
+             0  |     0x00      |       Block Terminator              Byte
+                +---------------+
+            ]]
+
             skip(body, p)
         else
             ngx.log(ngx.STDERR, string.format("unknow ext_block_flag:%x,p:%x",ext_block_flag, p(0)))
@@ -142,6 +351,36 @@ while p(0) < body:len() do
         end
     elseif block_flag == 0x2c then
         -- 图像标识符(Image Descriptor)
+        --[[
+                7 6 5 4 3 2 1 0        Field Name                    Type
+               +---------------+
+            0  |     0x2C      |       Image Separator               Byte
+               +---------------+
+            1  |               |       Image Left Position           Unsigned
+               +-             -+
+            2  |               |
+               +---------------+
+            3  |               |       Image Top Position            Unsigned
+               +-             -+
+            4  |               |
+               +---------------+
+            5  |               |       Image Width                   Unsigned
+               +-             -+
+            6  |               |
+               +---------------+
+            7  |               |       Image Height                  Unsigned
+               +-             -+
+            8  |               |
+               +---------------+
+            9  | | | |0 0|     |       <Packed Fields>               See below
+               +---------------+
+                <Packed Fields>  =      Local Color Table Flag        1 Bit
+                                        Interlace Flag                1 Bit
+                                        Sort Flag                     1 Bit
+                                        Reserved                      2 Bits
+                                        Size of Local Color Table     3 Bits
+        ]]
+
         local currentFrame = {}
         currentFrame.x = body:byte(p())+(body:byte(p())*2^8)
         currentFrame.y = body:byte(p())+(body:byte(p())*2^8)
@@ -153,6 +392,57 @@ while p(0) < body:len() do
         -- 图像数据
         local lzwSize = body:byte(p())
         skip(body, p)
+    elseif block_flag == 0x01 then
+        -- Plain Text Extension
+        --[[
+            7 6 5 4 3 2 1 0        Field Name                    Type
+            +---------------+
+         0  |     0x21      |       Extension Introducer          Byte
+            +---------------+
+         1  |     0x01      |       Plain Text Label              Byte
+            +---------------+
+       
+            +---------------+
+         0  |     0x0C      |       Block Size                    Byte
+            +---------------+
+         1  |               |       Text Grid Left Position       Unsigned
+            +-             -+
+         2  |               |
+            +---------------+
+         3  |               |       Text Grid Top Position        Unsigned
+            +-             -+
+         4  |               |
+            +---------------+
+         5  |               |       Text Grid Width               Unsigned
+            +-             -+
+         6  |               |
+            +---------------+
+         7  |               |       Text Grid Height              Unsigned
+            +-             -+
+         8  |               |
+            +---------------+
+         9  |               |       Character Cell Width          Byte
+            +---------------+
+        10  |               |       Character Cell Height         Byte
+            +---------------+
+        11  |               |       Text Foreground Color Index   Byte
+            +---------------+
+        12  |               |       Text Background Color Index   Byte
+            +---------------+
+       
+            +===============+
+            |               |
+         N  |               |       Plain Text Data               Data Sub-blocks
+            |               |
+            +===============+
+       
+            +---------------+
+         0  |     0x00      |       Block Terminator              Byte
+            +---------------+
+        ]]
+
+        p(13)
+        skip(body,p)
     elseif block_flag == 0x3b then
         -- Trailer
         break
@@ -162,4 +452,5 @@ while p(0) < body:len() do
     end 
 end
 
+ngx.header["Content-Length"] = body:len()
 ngx.say(body)
