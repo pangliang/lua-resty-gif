@@ -49,14 +49,6 @@ local body   = res.body
 ngx.header["Content-Type"] = res.headers["Content-Type"]
 ngx.status=res.status
 
-if string.sub(body, 1, 3) ~= "GIF" then
-    ngx.header["Content-Length"] = length
-    ngx.say(body)
-    return
-end
-
-local p = num(0)
-
 --[[
       7 6 5 4 3 2 1 0        Field Name                    Type
      +---------------+
@@ -73,17 +65,14 @@ local p = num(0)
    5 |               |
      +---------------+
 ]]
-if  body:byte(p()) ~= 0x47 or      
-    body:byte(p()) ~= 0x49 or
-    body:byte(p()) ~= 0x46 or
-    body:byte(p()) ~= 0x38 or
-    body:byte(p()) ~= 0x39 or
-    body:byte(p()) ~= 0x61
-then
-    ngx.log(ngx.ERR, "Invalid GIF 89a header:", string.sub(body, 1, 6))
-    -- ngx.say(body)
+if string.sub(body, 1, 6) ~= "GIF89a" then
+    ngx.log(ngx.ERR, "Invalid header:", string.sub(body, 1, 6), ", url:", url)
+    ngx.header["Content-Length"] = length
+    ngx.say(body)
     return
 end
+
+local p = num(6)
 
 -- Logical Screen Descriptor
 --[[
@@ -108,7 +97,6 @@ end
                              Sort Flag                     1 Bit
                              Size of Global Color Table    3 Bits
 ]]
-
 local width = body:byte(p())+(body:byte(p())*2^8)
 local height = body:byte(p())+(body:byte(p())*2^8)
 local pf0 = body:byte(p())
