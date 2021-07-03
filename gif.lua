@@ -12,7 +12,7 @@ if url == nil then
 end
 
 local delay = tonumber(args.delay) ~= nil and (tonumber(args.delay) > 255 and 255 or tonumber(args.delay)) or nil
-local loop = tonumber(args.loop) ~= nil and (tonumber(args.loop) > 255 and 0 or tonumber(args.loop)) or nil
+local loop = tonumber(args.loop) ~= nil and (tonumber(args.loop) > 255 and 0 or tonumber(args.loop)) or 0
 
 local res, err = httpc:request_uri(args.url, {
     method = "GET",
@@ -151,6 +151,9 @@ if global_colors_table_flag then
     p(num_global_colors * 3)
 end
 
+local ff_ext_block_ops = 0
+local loop_ext_block = false
+
 while p(0) < body:len() do
     local block_flag = body:byte(p())
     ngx.log(ngx.STDERR, string.format("block_flag:%x, p:%x",block_flag, p(0)-1))
@@ -206,6 +209,8 @@ while p(0) < body:len() do
              0  |     0x00      |       Block Terminator              Byte
                 +---------------+
             ]]
+
+            ff_ext_block_ops = p(0)
 
             local application_ext_label_size = body:byte(p())
 
@@ -265,6 +270,9 @@ while p(0) < body:len() do
                         18  |     0x00      |  Block Terminator
                             +---------------+
                     ]]
+
+                    -- 已有 loop块
+                    loop_ext_block = true
 
                     -- loop count
                     if loop ~= nil then
@@ -450,6 +458,19 @@ while p(0) < body:len() do
         ngx.log(ngx.STDERR, string.format("unknow block_flag:%x,p:%x",block_flag, p(0)))
         break
     end 
+end
+
+if loop_ext_block == false then
+    -- 没有loop 控制块, 强制加上
+    body = body:sub(1, ff_ext_block_ops)
+        .. string.char(0x0b)
+        .. "NETSCAPE2.0"
+        .. string.char(0x03, 0x01)
+        .. string.char(loop, 0)
+        .. string.char(0x00)
+        -- 从0xff插入的, 下一个block补上0x21 0xff
+        .. string.char(0x21, 0xff)
+        .. body:sub(ff_ext_block_ops)
 end
 
 ngx.header["Content-Length"] = body:len()
