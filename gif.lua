@@ -10,7 +10,8 @@ if url == nil then
     return
 end
 
-local delay = args.delay and args.delay/10 or 3
+local delay = tonumber(args.delay) ~= nil and (tonumber(args.delay) > 255 and 255 or tonumber(args.delay)) or nil
+local loop = tonumber(args.loop) ~= nil and (tonumber(args.loop) > 255 and 0 or tonumber(args.loop)) or nil
 
 local res, err = httpc:request_uri(args.url, {
     method = "GET",
@@ -104,6 +105,10 @@ while p(0) < body:len() do
                 local sub_block_id = body:byte(p())
                 if sub_block_id == 0x01 then
                     -- loop count
+                    if loop ~= nil then
+                        -- 设置loop
+                        body = body:sub(1, p(0)) .. string.char(loop, 0) .. body:sub(p(0)+3)
+                    end
                     local loop_count = body:byte(p())+(body:byte(p())*2^8)
                     ngx.log(ngx.STDERR, "loop_count:", loop_count)
                 else
@@ -120,8 +125,10 @@ while p(0) < body:len() do
             local block_size = body:byte(p())
             ngx.log(ngx.STDERR, "block_size:", block_size)
             local pf1 = body:byte(p())
-            -- 设置delay 为 100/0x64
-            body = body:sub(1, p(0)) .. string.char(delay, 0) .. body:sub(p(0)+3) 
+            if delay ~= nil then
+                -- 设置delay
+                body = body:sub(1, p(0)) .. string.char(delay, 0) .. body:sub(p(0)+3)
+            end
             local delay = body:byte(p())+(body:byte(p())*2^8)
             ngx.log(ngx.STDERR, "delay:", delay)
             local tra_color_index = body:byte(p())
